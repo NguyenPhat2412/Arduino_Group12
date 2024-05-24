@@ -1,1 +1,104 @@
 
+Phân tích code: 
+1. Thư viện:
+cpp
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
+#include "MAX30100_PulseOximeter.h"
+•	LiquidCrystal_I2C.h: Thư viện để điều khiển LCD qua giao tiếp I2C.
+•	Wire.h: Thư viện hỗ trợ giao tiếp I2C.
+•	MAX30100_PulseOximeter.h: Thư viện để tương tác với cảm biến MAX30100.
+2. Định nghĩa hằng số và biến:
+cpp
+Copy code
+#define REPORTING_PERIOD_MS     1000
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+byte smile[] = { ... };
+byte mod[] = { ... };
+byte sad[] = { ... };
+
+PulseOximeter pox;
+uint32_t tsLastReport = 0;
+•	REPORTING_PERIOD_MS: Định nghĩa khoảng thời gian báo cáo là 1000ms (1 giây).
+•	lcd: Khởi tạo đối tượng LCD với địa chỉ I2C 0x27 và kích thước 16x2.
+•	smile, mod, sad: Mảng byte định nghĩa các ký tự tùy chỉnh (mặt cười, mặt bình thường, mặt buồn).
+•	pox: Đối tượng PulseOximeter để tương tác với cảm biến MAX30100.
+•	tsLastReport: Biến lưu thời điểm báo cáo cuối cùng.
+3. Hàm CallBack khi phát hiện nhịp tim:
+cpp
+Copy code
+void onBeatDetected()
+{
+  Serial.println("Beat!!!");
+}
+•	Hàm này sẽ được gọi khi phát hiện nhịp tim, in ra thông báo "Beat!!!" trên Serial Monitor.
+4. Hàm setup():
+cpp
+Copy code
+void setup()
+{
+  Serial.begin(115200);
+  lcd.init();
+  lcd.backlight();
+  lcd.createChar(1, smile);
+  lcd.createChar(2, mod);
+  lcd.createChar(3, sad);
+  lcd.setCursor(0, 0);
+  lcd.print("      Pulse");
+  lcd.setCursor(0, 1);
+  lcd.print("    Oximeter");
+  delay(2000);
+
+  if (!pox.begin()) {
+    Serial.println("FAILED");
+    for (;;);
+  } else {
+    Serial.println("SUCCESS");
+  }
+  pox.setIRLedCurrent(MAX30100_LED_CURR_7_6MA);
+  pox.setOnBeatDetectedCallback(onBeatDetected);
+}
+•	Khởi tạo giao tiếp Serial với tốc độ 115200.
+•	Khởi tạo và cấu hình LCD, tạo các ký tự tùy chỉnh, hiển thị "Pulse Oximeter" trong 2 giây.
+•	Khởi tạo cảm biến MAX30100, nếu không thành công, in "FAILED" và dừng lại, nếu thành công, in "SUCCESS".
+•	Đặt cường độ đèn LED hồng ngoại và cấu hình hàm callback onBeatDetected.
+5. Hàm loop():
+cpp
+Copy code
+void loop()
+{
+  pox.update();
+  if (millis() - tsLastReport > REPORTING_PERIOD_MS) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("BPM : ");
+    lcd.print(pox.getHeartRate());
+    lcd.setCursor(0, 1);
+    lcd.print("SpO2: ");
+    lcd.print(pox.getSpO2());
+    lcd.print("%");
+    tsLastReport = millis();
+
+    if (pox.getSpO2() >= 96) {
+      lcd.setCursor(15, 1);
+      lcd.write(1);
+    }
+    else if (pox.getSpO2() <= 95 && pox.getSpO2() >= 91) {
+      lcd.setCursor(15, 1);
+      lcd.write(2);
+    }
+    else if (pox.getSpO2() <= 90) {
+      lcd.setCursor(15, 1);
+      lcd.write(3);
+    }
+  }
+}
+•	pox.update(): Cập nhật dữ liệu từ cảm biến.
+•	Kiểm tra nếu đã qua 1 giây từ lần báo cáo cuối cùng, xóa màn hình LCD và hiển thị nhịp tim (BPM) và mức SpO2.
+•	Cập nhật tsLastReport với thời gian hiện tại.
+•	Dựa vào mức SpO2, hiển thị ký tự tùy chỉnh tương ứng:
+o	SpO2 >= 96: mặt cười.
+o	SpO2 từ 91 đến 95: mặt bình thường.
+o	SpO2 <= 90: mặt buồn.
