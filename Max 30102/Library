@@ -1,0 +1,4 @@
+Các thư viện sử dụng: 
++) Adafruit SSD1306
++) Adafruit GFX
++) Max30105(sử dụng được cho các max3010X)
