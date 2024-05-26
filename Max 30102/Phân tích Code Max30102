@@ -1,0 +1,220 @@
+Bao gồm các thư viện và định nghĩa Macro
+
+#include "ssd1306h.h"
+#include "MAX30102.h"
+#include "Pulse.h"
+
+
+#ifndef cbi
+#define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
+#endif
+#ifndef sbi
+#define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
+#endif
+ssd1306h.h: Thư viện cho màn hình OLED SSD1306.
+MAX30102.h: Thư viện cho cảm biến MAX30102.
+Pulse.h: Thư viện để xử lý tín hiệu nhịp tim.
+Các macro cbi và sbi được định nghĩa để xóa và đặt bit trong thanh ghi.
+
+Biến toàn cục và hằng số
+SSD1306 oled; 
+MAX30102 sensor;
+Pulse pulseIR;
+Pulse pulseRed;
+MAFilter bpm;
+
+#define LED 13
+#define OPTIONS 7
+Tạo các đối tượng oled cho màn hình OLED, sensor cho cảm biến MAX30102, và hai đối tượng pulseIR và pulseRed để xử lý tín hiệu nhịp tim từ các tín hiệu hồng ngoại (IR) và đỏ (Red).
+LED là chân kết nối đèn LED trên bo mạch Arduino.
+OPTIONS là số lượng tùy chọn (có thể không được sử dụng trong mã nguồn này).
+
+Hình trái tim và bảng SpO2
+static const uint8_t heart_bits[] PROGMEM = { ... };
+const uint8_t spo2_table[184] PROGMEM = { ... };
+heart_bits: Định nghĩa hình trái tim để hiển thị trên màn hình OLED.
+spo2_table: Bảng tra cứu giá trị SpO2 dựa trên tỷ lệ tín hiệu đỏ và tín hiệu hồng ngoại.
+Hàm hiển thị số
+cpp
+Copy code
+void print_digit(int x, int y, long val, char c=' ', uint8_t field = 3, const int BIG = 2) {
+    uint8_t ff = field;
+    do { 
+        char ch = (val != 0) ? val % 10 + '0' : c;
+        oled.drawChar(x + BIG * (ff - 1) * 6, y, ch, BIG);
+        val = val / 10; 
+        --ff;
+    } while (ff > 0);
+}
+Hàm này hiển thị một số val tại tọa độ (x, y) trên màn hình OLED. Nếu val bằng 0, ký tự c sẽ được hiển thị.
+
+Lớp Waveform
+class Waveform {
+  public:
+    Waveform(void) { wavep = 0; }
+    
+    void record(int waveval) {
+        waveval = waveval / 8;        
+        waveval += 128;              
+        waveval = waveval < 0 ? 0 : waveval;
+        waveform[wavep] = (uint8_t)(waveval > 255) ? 255 : waveval; 
+        wavep = (wavep + 1) % MAXWAVE;
+    }
+
+    void scale() {
+        uint8_t maxw = 0;
+        uint8_t minw = 255;
+        for (int i = 0; i < MAXWAVE; i++) { 
+            maxw = waveform[i] > maxw ? waveform[i] : maxw;
+            minw = waveform[i] < minw ? waveform[i] : minw;
+        }
+        uint8_t scale8 = (maxw - minw) / 4 + 1;  
+        uint8_t index = wavep;
+        for (int i = 0; i < MAXWAVE; i++) {
+            disp_wave[i] = 31 - ((uint16_t)(waveform[index] - minw) * 8) / scale8;
+            index = (index + 1) % MAXWAVE;
+        }
+    }
+
+    void draw(uint8_t X) {
+        for (int i = 0; i < MAXWAVE; i++) {
+            uint8_t y = disp_wave[i];
+            oled.drawPixel(X + i, y);
+            if (i < MAXWAVE - 1) {
+                uint8_t nexty = disp_wave[i + 1];
+                if (nexty > y) {
+                    for (uint8_t iy = y + 1; iy < nexty; ++iy)  
+                        oled.drawPixel(X + i, iy);
+                } else if (nexty < y) {
+                    for (uint8_t iy = nexty + 1; iy < y; ++iy)  
+                        oled.drawPixel(X + i, iy);
+                }
+            }
+        }
+    }
+
+  private:
+    uint8_t waveform[MAXWAVE];
+    uint8_t disp_wave[MAXWAVE];
+    uint8_t wavep;
+} wave;
+Lớp Waveform dùng để ghi, chia tỷ lệ và vẽ dạng sóng PPG (photoplethysmography) trên màn hình OLED.
+record: Ghi giá trị dạng sóng mới.
+scale: Chia tỷ lệ các giá trị dạng sóng để phù hợp với màn hình.
+draw: Vẽ dạng sóng trên màn hình tại tọa độ X.
+
+Các biến để đo lường
+int beatAvg;
+int SPO2, SPO2f;
+bool filter_for_graph = false;
+bool draw_Red = false;
+uint8_t istate = 0;
+uint8_t sleep_counter = 0;
+beatAvg: Biến để lưu trữ giá trị nhịp tim trung bình.
+SPO2 và SPO2f: Biến để lưu trữ giá trị SpO2.
+filter_for_graph và draw_Red: Các biến cờ để điều khiển quá trình vẽ và lọc tín hiệu.
+istate và sleep_counter: Các biến trạng thái và đếm số lần ngủ.
+
+Hàm vẽ trên màn hình OLED
+void draw_oled(int msg) {
+    oled.firstPage();
+    do {
+        switch (msg) {
+            case 0:  oled.drawStr(10, 0, F("Device error"), 1); 
+                     break;
+            case 1:  oled.drawStr(13, 10, F("PLACE"), 1); 
+                     oled.drawStr(10, 20, F("FINGER"), 1);
+                     oled.drawXBMP(84, 0, 16, 16, heart_bits);
+                     oled.drawXBMP(108, 0, 16, 16, heart_bits);
+                     oled.drawStr(84, 14, F("Display"), 1); 
+                     oled.drawStr(84, 24, F("BPM  O2"), 1); 
+                     break;
+            case 2:  print_digit(86, 0, beatAvg);
+                     wave.draw(8);
+                     print_digit(98, 24, SPO2, ' ', 3, 1);
+                     oled.drawChar(116, 24, '%');
+                     break;
+            case 3:  oled.drawStr(16, 2, F("KENH SANG TAO TRE"), 1);
+                     oled.drawStr(30, 14, F("Thanks for"), 1);
+                     oled.drawStr(30, 24, F("subscribing"), 1);
+                     break;
+            case 4:  oled.drawStr(2, 6, F("THIET BI DO NHIP TIM"), 1);
+                     oled.drawStr(0, 18, F("NONG DO OXI TRONG MAU"), 1);
+                     break;
+        }
+    } while (oled.nextPage());
+}
+Hàm draw_oled vẽ các màn hình khác nhau trên OLED dựa trên tham số msg.
+
+Hàm setup
+void setup(void) {
+    pinMode(LED, OUTPUT);
+    oled.init();
+    oled.fill(0x00);
+    draw_oled(3);
+    delay(3000); 
+    if (!sensor.begin())  {
+        draw_oled(0);
+        while (1);
+    }
+    sensor.setup(); 
+}
+Hàm setup khởi tạo màn hình OLED, thiết lập chân LED làm đầu ra, và hiển thị thông báo ban đầu.
+Thử khởi tạo cảm biến và hiển thị thông báo lỗi nếu thất bại.
+
+Hàm loop
+void loop() {
+    sensor.check();
+    long now = millis();   
+    if (!sensor.available()) return;
+    uint32_t irValue = sensor.getIR(); 
+    uint32_t redValue = sensor.getRed();
+    sensor.nextSample();
+    if (irValue < 5000) {
+        draw_oled(sleep_counter <= 50 ? 1 : 4); 
+        delay(200);
+        ++sleep_counter;
+        if (sleep_counter > 100) {
+            sleep_counter = 0;
+        }
+    } else {
+        sleep_counter = 0;
+        int16_t IR_signal, Red_signal;
+        bool beatRed, beatIR;
+        if (!filter_for_graph) {
+            IR_signal = pulseIR.dc_filter(irValue);
+            Red_signal = pulseRed.dc_filter(redValue);
+            beatRed = pulseRed.isBeat(pulseRed.ma_filter(Red_signal));
+            beatIR = pulseIR.isBeat(pulseIR.ma_filter(IR_signal));        
+        } else {
+            IR_signal = pulseIR.ma_filter(pulseIR.dc_filter(irValue));
+            Red_signal = pulseRed.ma_filter(pulseRed.dc_filter(redValue));
+            beatRed = pulseRed.isBeat(Red_signal);
+            beatIR = pulseIR.isBeat(IR_signal);
+        }
+        wave.record(draw_Red ? -Red_signal : -IR_signal); 
+        if (draw_Red ? beatRed : beatIR) {
+            long btpm = 60000 / (now - lastBeat);
+            if (btpm > 0 && btpm < 200) beatAvg = bpm.filter((int16_t)btpm);
+            lastBeat = now; 
+            digitalWrite(LED, HIGH); 
+            led_on = true;
+            long numerator = (pulseRed.avgAC() * pulseIR.avgDC()) / 256;
+            long denominator = (pulseRed.avgDC() * pulseIR.avgAC()) / 256;
+            int RX100 = (denominator > 0) ? (numerator * 100) / denominator : 999;
+            SPO2f = (10400 - RX100 * 17 + 50)
+        }
+        // update màn hình mỗi 50 ms nếu khi nhấn vào cảm biến
+        if (now - displaytime > 50) {
+            displaytime = now;
+            wave.scale();
+            draw_oled(2);
+        }
+    }
+}
+Hàm loop thực hiện các bước chính:
+Kiểm tra cảm biến.
+Đọc giá trị tín hiệu IR và Red từ cảm biến.
+Nếu giá trị IR nhỏ hơn 5000, hiển thị màn hình chờ hoặc thông báo và tăng biến đếm sleep_counter.
+Nếu tín hiệu IR đủ lớn, xử lý tín hiệu để tìm nhịp tim và SpO2.
+Cập nhật màn hình OLED mỗi 50ms để hiển thị kết quả đo được.
